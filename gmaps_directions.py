@@ -1,19 +1,23 @@
+import copy
 import datetime
+import time
 import os
-
 import math
 import statistics
 from collections import namedtuple
 from typing import *
 import googlemaps
 import joblib
+import random
+import re
+import requests
 from rich import print
 from tqdm import tqdm
 import better_exceptions
 better_exceptions.hook()
 
 MAPS_KEY_FOR_DIRECTION_GEOLOC = os.environ["GMAPS_KEY"]
-cache_wrapper_get_from_to = joblib.Memory(f'/tmp/aio-cache/transit22/{datetime.date.today()}', verbose=False)
+hit_only_once_semi_pure = joblib.Memory(f'/tmp/aio-cache/transit22/{datetime.date.today()}', verbose=False)
 RouteAnalysis = namedtuple('RouteAnalysis', 'avg_duration,min_duration,max_duration,durations,objects')
 
 DATETIMES = [
@@ -23,12 +27,15 @@ DATETIMES = [
             datetime.datetime(2020, 5, 21, 19, 0, 0)
              ]
 
+addr_work = "Raffelstrasse 22, Zurich"
+addr_apt = 'Vulkanplatz 27, Zurich'
+ZurichHB = "Zurich HB Main Station"
+###################################################################################
 
 gmaps = googlemaps.Client(key=MAPS_KEY_FOR_DIRECTION_GEOLOC)
 
 # Geocoding an address
-addr_work = "Raffelstrasse 22, Zurich"
-addr_apt = 'Vulkanplatz 27, Zurich'
+
 
 geocode_work = gmaps.geocode(addr_work)
 geocode_apt = gmaps.geocode(addr_apt)
@@ -36,7 +43,7 @@ print ('geocode_work=',geocode_work)
 print ('geocode_apt', geocode_apt)
 
 
-@cache_wrapper_get_from_to.cache
+@hit_only_once_semi_pure.cache
 def wrapper_get_from_to(source, destination, time):
     directions_result = gmaps.directions(source,
                                          destination,
@@ -86,17 +93,59 @@ def pretty_time(seconds:float):
 
 def pretty_route(ra:RouteAnalysis):
     return(f"""
-    avg={pretty_time(result.avg_duration)} ({pretty_time(ra.min_duration)}..{pretty_time(ra.max_duration)})
+    avg={pretty_time(ra.avg_duration)} ({pretty_time(ra.min_duration)}..{pretty_time(ra.max_duration)})
     """)
 
-def extract_addrs(msg):
+def extract_links_from_mail(msg:str):
     pass
 
-def inbound_email(msg):
-    addrs = extract_addrs()
+@hit_only_once_semi_pure.cache
+def wrapper_immo_once(url):
 
+    time.sleep(3) #take that, replace by poisson
+    print("[bold red]*HITTING SERVER*[/bold red]")
+    try:
+        return requests.get(url).text
+    except Exception as e:
+        print(e)
+        raise
+
+
+def extract_coord(link):
+    res = wrapper_immo_once(link)
+
+    coordregexp = re.compile(r'maps.google.com/maps\?cbll=(.*)%2C(.*?)&amp')
+    try:
+        return re.findall(coordregexp, res)[0]
+    except IndexError:
+        print("[bold magenta]failed assumption (regexp GPS)[/bold magenta]")
+    except Exception:
+        raise('uwotm8')
+
+def inbound_email(msg):
+
+    # links = extract_links_from_mail()
+
+    links= [
+        'https://www.immomapper.ch/en/objekts/GaolJrOA61-apartment-for-rent-in-uster-zh?utm_source=search_abo_email&utm_medium=email',
+        'https://www.immomapper.ch/en/objekts/omzdJ97L6A-apartment-for-rent-in-uster-zh?utm_source=search_abo_email&utm_medium=email'
+    ]
+
+    gps_coord = {link:{'coord':extract_coord(link)} for link in links}
+    return gps_coord
+
+def patch_with_times(apts:dict):
+    apts = copy.deepcopy(apts)
+
+    for url in apts.keys():
+        apts[url]['time'] = pretty_route(travel_times_for_route(ZurichHB, apts[url]['coord']))
+
+    return apts
 
 if __name__ == "__main__":
-    result = (travel_times_for_route(addr_work, addr_apt))
+    print (patch_with_times(inbound_email('')))
 
-    print(pretty_route(result))
+
+
+
+
